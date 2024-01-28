@@ -209,14 +209,37 @@ impl App {
             .await??;
 
             println!("Sent fallback transaction");
-            match ctx.process_response(&mut response.into_reader()) {
+            let error = match ctx.process_response(&mut response.into_reader()) {
                 Ok(Some(psbt)) => return Ok(psbt),
-                Ok(None) => std::thread::sleep(std::time::Duration::from_secs(5)),
-                Err(re) => {
-                    println!("{}", re);
-                    log::debug!("{:?}", re);
+                Ok(None) => {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    continue;
                 }
-            }
+                Err(error) => error,
+            };
+            if error.requires_version(&1) {
+                let (req, ctx) = req_ctx.clone().extract_v1().unwrap();
+                let http = http_agent()?;
+                println!(
+                    "Sending fallback v1 request to {} after v2 request attempt fail",
+                    &req.url
+                );
+                let response = spawn_blocking(move || {
+                    http.post(req.url.as_ref())
+                        .set("Content-Type", "text/plain")
+                        .send_bytes(&req.body)
+                        .map_err(map_ureq_err)
+                })
+                .await??;
+                println!("Sent fallback v1 request");
+                match ctx.process_response(&mut response.into_reader()) {
+                    Ok(psbt) => return Ok(psbt),
+                    Err(err) => {
+                        println!("{}", err);
+                        log::debug!("{:?}", err);
+                    }
+                }
+            };
         }
     }
 
